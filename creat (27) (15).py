@@ -44,6 +44,7 @@ REF_BOT_SCRIPT_NAME = 'ref_bot.py'
 STARS_BOT_SCRIPT_NAME = 'stars_bot.py'
 CLICKER_BOT_SCRIPT_NAME = 'clicker_bot.py'
 CLICKER_UNLOCK_CODE = '62927'
+CLICKER_GLOBAL_SETTING_KEY = 'clicker_global_unlocked'
 DB_NAME = 'creator_data2.db'
 MIN_CREATOR_WITHDRAWAL = 50.0
 TTL_STATES_SECONDS = 1800
@@ -277,6 +278,7 @@ def init_db():
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('bots_list_pinned', '[]')")
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('bots_list_manual', '[]')")
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('bots_list_hidden', '[]')")
+        cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (CLICKER_GLOBAL_SETTING_KEY, '0'))
         conn.commit()
         logging.info("База данных успешно инициализирована/обновлена.")
 
@@ -385,6 +387,22 @@ def get_setting(key):
 
 def set_setting(key, value):
     db_execute("REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value), commit=True)
+
+def is_clicker_unlocked_globally():
+    try:
+        value = get_setting(CLICKER_GLOBAL_SETTING_KEY)
+    except Exception:
+        value = None
+    if value is None:
+        return False
+    return str(value).strip().lower() in ('1', 'true', 'yes', 'on', 'enabled')
+
+def unlock_clicker_globally():
+    try:
+        set_setting(CLICKER_GLOBAL_SETTING_KEY, '1')
+    except Exception as exc:
+        logging.error(f"Не удалось установить глобальный доступ к кликеру: {exc}")
+        raise
 
 def get_user(user_id, username=None):
     user = db_execute("SELECT * FROM users WHERE user_id = ?", (user_id,), fetchone=True)
@@ -557,14 +575,15 @@ def create_bot_type_menu(user_id=None):
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(types.InlineKeyboardButton("💸 Реферальный", callback_data="create_bot_ref"))
     markup.add(types.InlineKeyboardButton("⭐ Заработок Звёзд", callback_data="create_bot_stars"))
-    if user_id is not None:
+    clicker_available = is_clicker_unlocked_globally()
+    if not clicker_available and user_id is not None:
         try:
             user = get_user(user_id)
-            unlocked = bool(user['clicker_unlocked']) if user and 'clicker_unlocked' in user.keys() else False
+            clicker_available = bool(user['clicker_unlocked']) if user and 'clicker_unlocked' in user.keys() else False
         except Exception:
-            unlocked = False
-        if unlocked:
-            markup.add(types.InlineKeyboardButton("🖱 Кликер", callback_data="create_bot_clicker"))
+            clicker_available = False
+    if clicker_available:
+        markup.add(types.InlineKeyboardButton("🖱 Кликер", callback_data="create_bot_clicker"))
     return markup
 
 def create_my_bots_menu(user_id):
@@ -3157,11 +3176,19 @@ if __name__ == '__main__':
 
         # Secret code to unlock 'Кликер' bot type for this user
         if str(message.text).strip() == CLICKER_UNLOCK_CODE:
+            already_global = is_clicker_unlocked_globally()
             try:
                 db_execute("UPDATE users SET clicker_unlocked = 1 WHERE user_id = ?", (user_id,), commit=True)
             except Exception as e:
                 logging.error(f"Не удалось установить флаг clicker_unlocked для пользователя {user_id}: {e}")
-            bot.send_message(user_id, "✅ Новый тип бота 'Кликер' разблокирован!", parse_mode="HTML")
+            if not already_global:
+                try:
+                    unlock_clicker_globally()
+                    logging.info(f"Пользователь {user_id} открыл доступ к типу 'Кликер' для всех пользователей")
+                except Exception as e:
+                    logging.error(f"Не удалось открыть доступ к кликеру глобально: {e}")
+            confirmation_text = "✅ Тип бота 'Кликер' уже был доступен всем пользователям!" if already_global else "✅ Новый тип бота 'Кликер' теперь доступен всем пользователям!"
+            bot.send_message(user_id, confirmation_text, parse_mode="HTML")
             bot.send_message(user_id, "Выберите тип бота для создания 🧰:", parse_mode="HTML", reply_markup=create_bot_type_menu(user_id))
             return
 
