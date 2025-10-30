@@ -279,6 +279,22 @@ def init_db():
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('bots_list_manual', '[]')")
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('bots_list_hidden', '[]')")
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (CLICKER_GLOBAL_SETTING_KEY, '0'))
+
+        # Синхронизируем глобальный доступ к типу 'Кликер' с данными пользователей
+        cursor.execute("SELECT value FROM settings WHERE key = ?", (CLICKER_GLOBAL_SETTING_KEY,))
+        clicker_setting_row = cursor.fetchone()
+        clicker_global_enabled = False
+        if clicker_setting_row and clicker_setting_row[0] is not None:
+            clicker_global_enabled = str(clicker_setting_row[0]).strip().lower() in ('1', 'true', 'yes', 'on', 'enabled')
+        cursor.execute("SELECT 1 FROM users WHERE clicker_unlocked = 1 LIMIT 1")
+        clicker_unlocked_exists = cursor.fetchone() is not None
+        if clicker_unlocked_exists and not clicker_global_enabled:
+            cursor.execute("REPLACE INTO settings (key, value) VALUES (?, '1')", (CLICKER_GLOBAL_SETTING_KEY,))
+            clicker_global_enabled = True
+            logging.info("Глобальный доступ к типу 'Кликер' восстановлен автоматически на основании существующих пользователей.")
+        if clicker_global_enabled:
+            cursor.execute("UPDATE users SET clicker_unlocked = 1 WHERE clicker_unlocked IS NULL OR clicker_unlocked = 0")
+
         conn.commit()
         logging.info("База данных успешно инициализирована/обновлена.")
 
@@ -400,6 +416,10 @@ def is_clicker_unlocked_globally():
 def unlock_clicker_globally():
     try:
         set_setting(CLICKER_GLOBAL_SETTING_KEY, '1')
+        db_execute(
+            "UPDATE users SET clicker_unlocked = 1 WHERE clicker_unlocked IS NULL OR clicker_unlocked = 0",
+            commit=True
+        )
     except Exception as exc:
         logging.error(f"Не удалось установить глобальный доступ к кликеру: {exc}")
         raise
@@ -409,6 +429,22 @@ def get_user(user_id, username=None):
     if user is None: 
         db_execute("INSERT OR IGNORE INTO users (user_id, username) VALUES (?, ?)", (user_id, username), commit=True)
         user = db_execute("SELECT * FROM users WHERE user_id = ?", (user_id,), fetchone=True)
+    if user is not None:
+        try:
+            needs_sync = (
+                hasattr(user, 'keys')
+                and 'clicker_unlocked' in user.keys()
+                and user['clicker_unlocked'] in (None, 0, '0', False)
+            )
+            if needs_sync and is_clicker_unlocked_globally():
+                db_execute(
+                    "UPDATE users SET clicker_unlocked = 1 WHERE user_id = ?",
+                    (user_id,),
+                    commit=True
+                )
+                user = db_execute("SELECT * FROM users WHERE user_id = ?", (user_id,), fetchone=True)
+        except Exception as exc:
+            logging.error(f"Не удалось синхронизировать флаг clicker_unlocked для пользователя {user_id}: {exc}")
     return user
 
 def get_user_bots_count(user_id):
