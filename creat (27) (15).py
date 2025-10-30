@@ -42,6 +42,8 @@ ADMIN_IDS = [
 MAX_BOTS_PER_USER = 5
 REF_BOT_SCRIPT_NAME = 'ref_bot.py'
 STARS_BOT_SCRIPT_NAME = 'stars_bot.py'
+CLICKER_BOT_SCRIPT_NAME = 'clicker_bot.py'
+CLICKER_UNLOCK_CODE = '62927'
 DB_NAME = 'creator_data2.db'
 MIN_CREATOR_WITHDRAWAL = 50.0
 TTL_STATES_SECONDS = 1800
@@ -142,7 +144,8 @@ def init_db():
         
         cursor.execute('''CREATE TABLE IF NOT EXISTS users (
             user_id INTEGER PRIMARY KEY, username TEXT, balance REAL DEFAULT 0.0,
-            frozen_balance REAL DEFAULT 0.0
+            frozen_balance REAL DEFAULT 0.0,
+            clicker_unlocked BOOLEAN DEFAULT FALSE
         )''')
         
         cursor.execute('''CREATE TABLE IF NOT EXISTS admin_tasks (
@@ -163,6 +166,9 @@ def init_db():
         if 'frozen_balance' not in user_columns:
             cursor.execute("ALTER TABLE users ADD COLUMN frozen_balance REAL DEFAULT 0.0")
             logging.info("Колонка 'frozen_balance' добавлена в таблицу 'users'.")
+        if 'clicker_unlocked' not in user_columns:
+            cursor.execute("ALTER TABLE users ADD COLUMN clicker_unlocked BOOLEAN DEFAULT FALSE")
+            logging.info("Колонка 'clicker_unlocked' добавлена в таблицу 'users'.")
 
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS bots (
@@ -233,6 +239,22 @@ def init_db():
             'stars_daily_cooldown': "INTEGER DEFAULT 24",
             'stars_ref_bonus_referrer': "REAL DEFAULT 15.0",
             'stars_ref_bonus_new_user': "REAL DEFAULT 10.0",
+            # Clicker-specific settings
+            'click_reward_min': "REAL DEFAULT 0.001",
+            'click_reward_max': "REAL DEFAULT 0.005",
+            'energy_max': "INTEGER DEFAULT 1000",
+            'energy_regen_rate': "INTEGER DEFAULT 2",
+            'welcome_bonus_clicker': "REAL DEFAULT 1.0",
+            'daily_bonus_clicker': "REAL DEFAULT 0.5",
+            'daily_bonus_cooldown_clicker': "INTEGER DEFAULT 12",
+            'ref_bonus_referrer_clicker': "REAL DEFAULT 0.2",
+            'ref_bonus_new_user_clicker': "REAL DEFAULT 0.1",
+            'withdrawal_min_clicker': "REAL DEFAULT 10.0",
+            'withdrawal_method_text_clicker': "TEXT DEFAULT 'Payeer-кошелек'",
+            'payments_channel_clicker': "TEXT",
+            'support_chat_clicker': "TEXT",
+            'clicker_flyer_api_key': "TEXT",
+            'clicker_op_enabled': "BOOLEAN DEFAULT FALSE",
         }
         
         for col, col_type in new_columns.items():
@@ -274,7 +296,8 @@ def db_execute(query, params=(), commit=False, fetchone=False, fetchall=False):
 def get_child_bot_user_count(bot_id, bot_type):
     db_filename_map = {
         'ref': f"dbs/bot_{bot_id}_data.db",
-        'stars': f"dbs/bot_{bot_id}_stars_data.db"
+        'stars': f"dbs/bot_{bot_id}_stars_data.db",
+        'clicker': f"dbs/bot_{bot_id}_clicker_data.db",
     }
     db_filename = db_filename_map.get(bot_type, f"dbs/bot_{bot_id}_data.db")
     try:
@@ -293,7 +316,12 @@ def update_bot_setting(bot_id, setting_name, new_value):
         'withdrawal_method_text', 'payout_channel', 'chat_link', 'regulations_text', 'vip_status', 
         'admins', 'owner_id', 'welcome_message', 'flyer_op_enabled', 'flyer_api_key', 'flyer_limit',
         'stars_payments_channel', 'stars_support_chat', 'stars_flyer_api_key', 'stars_welcome_bonus', 'stars_op_enabled',
-        'stars_daily_bonus', 'stars_daily_cooldown', 'stars_ref_bonus_referrer', 'stars_ref_bonus_new_user'
+        'stars_daily_bonus', 'stars_daily_cooldown', 'stars_ref_bonus_referrer', 'stars_ref_bonus_new_user',
+        # Clicker-specific settings
+        'click_reward_min', 'click_reward_max', 'energy_max', 'energy_regen_rate', 'welcome_bonus_clicker',
+        'daily_bonus_clicker', 'daily_bonus_cooldown_clicker', 'ref_bonus_referrer_clicker', 'ref_bonus_new_user_clicker',
+        'withdrawal_min_clicker', 'withdrawal_method_text_clicker', 'payments_channel_clicker', 'support_chat_clicker',
+        'clicker_flyer_api_key', 'clicker_op_enabled'
     ]
     if setting_name in allowed_settings:
         db_execute(f"UPDATE bots SET {setting_name} = ? WHERE id = ?", (new_value, bot_id), commit=True)
@@ -389,7 +417,8 @@ def delete_bot_from_db(bot_id):
     except FileNotFoundError: pass
     db_filename_map = {
         'ref': f"dbs/bot_{bot_id}_data.db",
-        'stars': f"dbs/bot_{bot_id}_stars_data.db"
+        'stars': f"dbs/bot_{bot_id}_stars_data.db",
+        'clicker': f"dbs/bot_{bot_id}_clicker_data.db",
     }
     db_filename = db_filename_map.get(bot_info['bot_type'])
     try:
@@ -414,6 +443,10 @@ def start_bot_process(bot_id):
             script_name = STARS_BOT_SCRIPT_NAME
             if bot_info['stars_flyer_api_key']:
                  env['FLYER_API_KEY'] = bot_info['stars_flyer_api_key']
+        elif bot_info['bot_type'] == 'clicker':
+            script_name = CLICKER_BOT_SCRIPT_NAME
+            if bot_info['clicker_flyer_api_key']:
+                 env['FLYER_API_KEY'] = bot_info['clicker_flyer_api_key']
         else:
             return False, "Неизвестный тип бота."
         
@@ -520,10 +553,18 @@ def create_admin_menu():
     markup.add(types.InlineKeyboardButton("✏️ Изменить приветствие креатора", callback_data="admin_edit_creator_welcome"))
     return markup
     
-def create_bot_type_menu():
+def create_bot_type_menu(user_id=None):
     markup = types.InlineKeyboardMarkup(row_width=1)
     markup.add(types.InlineKeyboardButton("💸 Реферальный", callback_data="create_bot_ref"))
     markup.add(types.InlineKeyboardButton("⭐ Заработок Звёзд", callback_data="create_bot_stars"))
+    if user_id is not None:
+        try:
+            user = get_user(user_id)
+            unlocked = bool(user['clicker_unlocked']) if user and 'clicker_unlocked' in user.keys() else False
+        except Exception:
+            unlocked = False
+        if unlocked:
+            markup.add(types.InlineKeyboardButton("🖱 Кликер", callback_data="create_bot_clicker"))
     return markup
 
 def create_my_bots_menu(user_id):
@@ -535,7 +576,7 @@ def create_my_bots_menu(user_id):
         for bot_item in user_bots:
             icons = {'unconfigured': '⚠️', 'stopped': '🔴', 'running': '🟢'}
             status_icon = icons.get(bot_item['status'], '❓')
-            bot_type_icon = "💸" if bot_item['bot_type'] == 'ref' else "⭐"
+            bot_type_icon = "💸" if bot_item['bot_type'] == 'ref' else "⭐" if bot_item['bot_type'] == 'stars' else "🖱" if bot_item['bot_type'] == 'clicker' else "🎨"
             vip_icon = "⭐" if bot_item['vip_status'] else ""
             name = f"@{bot_item['bot_username']}" if bot_item['bot_username'] else f"Бот #{bot_item['id']} (без имени)"
             markup.add(types.InlineKeyboardButton(f"{status_icon} {bot_type_icon} {name} {vip_icon}", callback_data=f"actions_{bot_item['id']}"))
@@ -551,7 +592,7 @@ def create_bot_actions_menu(bot_id):
     
     markup.add(types.InlineKeyboardButton(status_text, callback_data="dummy"))
     
-    if bot_info['bot_type'] in ['ref', 'stars']:
+    if bot_info['bot_type'] in ['ref', 'stars', 'clicker']:
         markup.add(types.InlineKeyboardButton("⚙️ Конфигурация", callback_data=f"config_{bot_id}"),
                    types.InlineKeyboardButton("💰 Доп. заработок (Flyer)", callback_data=f"dop_zarabotok_{bot_id}"))
     else:
@@ -616,8 +657,39 @@ def create_stars_bot_config_menu(bot_id):
     return markup
 
 def create_clicker_bot_config_menu(bot_id):
-    # Удалено: тип 'clicker' больше не поддерживается
-    return None
+    bot_info = get_bot_by_id(bot_id)
+    if not bot_info:
+        return None
+    markup = types.InlineKeyboardMarkup(row_width=2)
+    if bot_info['status'] == 'running':
+        markup.add(types.InlineKeyboardButton("⏹️ Остановить", callback_data=f"control_{bot_id}_stop"),
+                   types.InlineKeyboardButton("🔄 Перезапустить", callback_data=f"control_{bot_id}_restart"))
+    else:
+        markup.add(types.InlineKeyboardButton("▶️ Запустить", callback_data=f"control_{bot_id}_start"))
+
+    markup.add(types.InlineKeyboardButton("🔑 Токен", callback_data=f"edit_{bot_id}_bot_token"),
+               types.InlineKeyboardButton("👋 Приветствие", callback_data=f"edit_{bot_id}_welcome_message"))
+
+    markup.add(types.InlineKeyboardButton(f"Клик: {(bot_info['click_reward_min'] or 0.001)}-{(bot_info['click_reward_max'] or 0.005)}₽", callback_data=f"edit_{bot_id}_click_reward_min"))
+
+    markup.add(types.InlineKeyboardButton(f"Реген: {(bot_info['energy_regen_rate'] or 2)}/сек", callback_data=f"edit_{bot_id}_energy_regen_rate"),
+               types.InlineKeyboardButton(f"Мин. вывод: {(bot_info['withdrawal_min_clicker'] or 10.0)}₽", callback_data=f"edit_{bot_id}_withdrawal_min_clicker"))
+
+    markup.add(types.InlineKeyboardButton(f"Бонус за старт: {(bot_info['welcome_bonus_clicker'] or 1.0)}₽", callback_data=f"edit_{bot_id}_welcome_bonus_clicker"),
+               types.InlineKeyboardButton(f"Ежедн. бонус: {(bot_info['daily_bonus_clicker'] or 0.5)}₽", callback_data=f"edit_{bot_id}_daily_bonus_clicker"))
+
+    markup.add(types.InlineKeyboardButton(f"КД подарка: {(bot_info['daily_bonus_cooldown_clicker'] or 12)} ч.", callback_data=f"edit_{bot_id}_daily_bonus_cooldown_clicker"),
+               types.InlineKeyboardButton("🏧 Способ вывода", callback_data=f"edit_{bot_id}_withdrawal_method_text_clicker"))
+
+    markup.add(types.InlineKeyboardButton(f"Бонус рефереру: {(bot_info['ref_bonus_referrer_clicker'] or 0.2)}₽", callback_data=f"edit_{bot_id}_ref_bonus_referrer_clicker"),
+               types.InlineKeyboardButton(f"Бонус рефералу: {(bot_info['ref_bonus_new_user_clicker'] or 0.1)}₽", callback_data=f"edit_{bot_id}_ref_bonus_new_user_clicker"))
+
+    markup.add(types.InlineKeyboardButton("📢 Канал выплат", callback_data=f"edit_{bot_id}_payments_channel_clicker"),
+               types.InlineKeyboardButton("💬 Чат поддержки", callback_data=f"edit_{bot_id}_support_chat_clicker"))
+
+    markup.add(types.InlineKeyboardButton("👥 Админы", callback_data=f"admins_{bot_id}_manage"))
+    markup.add(types.InlineKeyboardButton("⬅️ Главное меню бота", callback_data=f"actions_{bot_id}"))
+    return markup
 
 def create_dop_zarabotok_menu(bot_id):
     bot_info = get_bot_by_id(bot_id)
@@ -630,8 +702,8 @@ def create_dop_zarabotok_menu(bot_id):
         text = (f"💰 *Дополнительный заработок*\n\n"
                 f"Подключите систему обязательной подписки (ОП) к вашему боту и получайте *{op_reward} ₽* за каждого уникального, настоящего русского пользователя, который её пройдет!\n\n"
                 f"Это отличный способ монетизировать аудиторию вашего бота, не требующий от вас никаких усилий. 💸")
-    elif bot_info['bot_type'] == 'stars':
-        is_enabled = bot_info['stars_op_enabled']
+    elif bot_info['bot_type'] in ['stars', 'clicker']:
+        is_enabled = bot_info['stars_op_enabled'] if bot_info['bot_type'] == 'stars' else bot_info['clicker_op_enabled']
         sub_reward = get_setting('stars_sub_reward') or "1.0"
         text = (f"💰 *Дополнительный заработок*\n\n"
                 f"1. Вы получаете *{sub_reward} ₽* за каждого нового пользователя, который прошел обязательную подписку в вашем боте (работает только при активном Flyer).\n\n"
@@ -2504,7 +2576,7 @@ def handle_admin_callbacks(call):
             markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="admin_back"))
             bot.edit_message_text("📂 Выберите список для просмотра:", ADMIN_ID, call.message.message_id, reply_markup=markup)
         elif sub_action == "op":
-            bots_list = db_execute("SELECT id, bot_username, owner_id, bot_type FROM bots WHERE flyer_op_enabled = 1 OR stars_op_enabled = 1", fetchall=True)
+            bots_list = db_execute("SELECT id, bot_username, owner_id, bot_type FROM bots WHERE flyer_op_enabled = 1 OR stars_op_enabled = 1 OR clicker_op_enabled = 1", fetchall=True)
             text = "<b>🤖 Боты с подключенным Flyer ОП:</b>\n\n" + ('\n'.join([f"- ID: <code>{b['id']}</code> (@{escape(b['bot_username'] or 'N/A')}) | Владелец: <code>{b['owner_id']}</code> | 👥 {get_child_bot_user_count(b['id'], b['bot_type'])}" for b in bots_list]) or "Список пуст.")
             markup = types.InlineKeyboardMarkup().add(types.InlineKeyboardButton("⬅️ Назад к спискам", callback_data="admin_lists_menu"))
             bot.edit_message_text(text, ADMIN_ID, call.message.message_id, parse_mode="HTML", reply_markup=markup)
@@ -2706,10 +2778,13 @@ def show_admin_bot_info(user_id, message_id, bot_id):
     elif bot_info['bot_type'] == 'stars':
         flyer_key = bot_info['stars_flyer_api_key']
         flyer_enabled = bot_info['stars_op_enabled']
+    elif bot_info['bot_type'] == 'clicker':
+        flyer_key = bot_info['clicker_flyer_api_key']
+        flyer_enabled = bot_info['clicker_op_enabled']
     
 
     text = (f"<b>ℹ️ Информация о боте ID <code>{bot_id}</code></b>\n\n"
-            f"<b>Тип:</b> {'Реферальный' if bot_info['bot_type'] == 'ref' else 'Заработок Звёзд'}\n"
+            f"<b>Тип:</b> {'Реферальный' if bot_info['bot_type'] == 'ref' else 'Заработок Звёзд' if bot_info['bot_type'] == 'stars' else 'Кликер'}\n"
             f"<b>Username:</b> @{bot_username}\n"
             f"<b>Токен:</b> <code>{escape(bot_info['bot_token'] or 'Не установлен')}</code>\n"
             f"<b>Владелец:</b> <code>{bot_info['owner_id']}</code> (@{owner_username})\n"
@@ -3080,6 +3155,16 @@ if __name__ == '__main__':
             )
             return
 
+        # Secret code to unlock 'Кликер' bot type for this user
+        if str(message.text).strip() == CLICKER_UNLOCK_CODE:
+            try:
+                db_execute("UPDATE users SET clicker_unlocked = 1 WHERE user_id = ?", (user_id,), commit=True)
+            except Exception as e:
+                logging.error(f"Не удалось установить флаг clicker_unlocked для пользователя {user_id}: {e}")
+            bot.send_message(user_id, "✅ Новый тип бота 'Кликер' разблокирован!", parse_mode="HTML")
+            bot.send_message(user_id, "Выберите тип бота для создания 🧰:", parse_mode="HTML", reply_markup=create_bot_type_menu(user_id))
+            return
+
         if message.text == "➕ Создать бота":
             count = get_user_bots_count(user_id)
             try:
@@ -3089,7 +3174,7 @@ if __name__ == '__main__':
             if count >= limit_setting and not is_admin(user_id):
                 bot.send_message(user_id, f"❌ *Лимит достигнут!* Вы создали {count} из {limit_setting} ботов.", parse_mode="Markdown")
                 return
-            bot.send_message(user_id, "Выберите тип бота для создания 🧰:", parse_mode="HTML", reply_markup=create_bot_type_menu())
+            bot.send_message(user_id, "Выберите тип бота для создания 🧰:", parse_mode="HTML", reply_markup=create_bot_type_menu(user_id))
         elif message.text == "📋 Списки ботов":
             # Check if feature enabled
             try:
@@ -3109,7 +3194,7 @@ if __name__ == '__main__':
                 return
             lines = []
             for bid, uname, btype, cnt, link in listed[:50]:
-                type_icon = "💸" if btype == 'ref' else "⭐"
+                type_icon = "💸" if btype == 'ref' else ("⭐" if btype == 'stars' else "🖱")
                 username_show = f"@{uname}" if uname != 'Без имени' else 'Без имени'
                 link_show = link if link != '—' else '—'
                 lines.append(f"{type_icon} ID: <code>{bid}</code> | {username_show} | 👥 {cnt} | 🔗 {link_show}")
@@ -3555,7 +3640,11 @@ if __name__ == '__main__':
                 bot.answer_callback_query(call.id, "Бот создается...")
                 bot_id = create_bot_in_db(user_id, 'stars')
                 bot.edit_message_text(f"⭐ Бот 'Заработок Звёзд' #{bot_id} создан! Теперь он в списке ваших ботов:", user_id, call.message.message_id, reply_markup=create_my_bots_menu(user_id)); return
-            # Удалены: create_bot_clicker, create_bot_creator
+            if call.data == "create_bot_clicker":
+                bot.answer_callback_query(call.id, "Бот создается...")
+                bot_id = create_bot_in_db(user_id, 'clicker')
+                bot.edit_message_text(f"🖱 Бот 'Кликер' #{bot_id} создан! Теперь он в списке ваших ботов:", user_id, call.message.message_id, reply_markup=create_my_bots_menu(user_id)); return
+            # Удалены: create_bot_creator
 
             data = call.data.split('_')
             action = data[0]
@@ -3566,7 +3655,7 @@ if __name__ == '__main__':
             if action == 'actions':
                 bot_info = get_bot_by_id(bot_id)
                 bot_name = f"@{bot_info['bot_username']}" if bot_info['bot_username'] else f"Бот #{bot_id}"
-                bot_type_name = "Реферальный" if bot_info['bot_type'] == 'ref' else "Заработок Звёзд"
+                bot_type_name = "Реферальный" if bot_info['bot_type'] == 'ref' else ("Заработок Звёзд" if bot_info['bot_type'] == 'stars' else "Кликер")
                 if bot_info['status'] == 'running' and bot_info['pid'] and psutil.pid_exists(bot_info['pid']):
                     resources = get_process_resources(bot_info['pid'])
                     start_time_val = bot_info['start_time']
@@ -3635,7 +3724,8 @@ if __name__ == '__main__':
                     bot_info = get_bot_by_id(bot_id)
                     db_filename_map = {
                         'ref': f"dbs/bot_{bot_id}_data.db",
-                        'stars': f"dbs/bot_{bot_id}_stars_data.db"
+                        'stars': f"dbs/bot_{bot_id}_stars_data.db",
+                        'clicker': f"dbs/bot_{bot_id}_clicker_data.db",
                     }
                     db_filename = db_filename_map.get(bot_info['bot_type'])
                     if not db_filename or not os.path.exists(db_filename):
