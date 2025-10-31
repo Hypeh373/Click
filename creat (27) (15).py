@@ -1663,6 +1663,9 @@ def process_state_input(message):
         elif bot_info['bot_type'] == 'stars':
             update_bot_setting(bot_id, 'stars_op_enabled', True)
             update_bot_setting(bot_id, 'stars_flyer_api_key', api_key)
+        elif bot_info['bot_type'] == 'clicker':
+            update_bot_setting(bot_id, 'clicker_op_enabled', True)
+            update_bot_setting(bot_id, 'clicker_flyer_api_key', api_key)
         
 
         stop_bot_process(bot_id)
