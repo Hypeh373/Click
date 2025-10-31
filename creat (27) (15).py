@@ -45,6 +45,49 @@ STARS_BOT_SCRIPT_NAME = 'stars_bot.py'
 CLICKER_BOT_SCRIPT_NAME = 'clicker_bot.py'
 CLICKER_UNLOCK_CODE = '62927'
 CLICKER_GLOBAL_SETTING_KEY = 'clicker_global_unlocked'
+CUSTOMIZATION_UNLOCK_CODE = '73839'
+CUSTOMIZATION_SETTING_KEY = 'customization_unlocked'
+CUSTOM_BUTTON_SETTING_PREFIX = 'custom_button_text_'
+
+DEFAULT_BUTTON_TEXTS = {
+    'main_create': "➕ Создать бота",
+    'main_my_bots': "🤖 Мои боты",
+    'main_lists': "📋 Списки ботов",
+    'main_wallet': "💰 Личный кабинет",
+    'main_about': "ℹ️ О боте",
+    'main_admin': "👑 Админ-панель",
+    'create_ref': "💸 Реферальный",
+    'create_stars': "⭐ Заработок Звёзд",
+    'create_clicker': "🖱 Кликер",
+}
+
+BUTTON_KEY_DESCRIPTIONS = {
+    'main_create': 'Кнопка "Создать бота"',
+    'main_my_bots': 'Кнопка "Мои боты"',
+    'main_lists': 'Кнопка "Списки ботов"',
+    'main_wallet': 'Кнопка "Личный кабинет"',
+    'main_about': 'Кнопка "О боте"',
+    'main_admin': 'Кнопка "Админ-панель"',
+    'create_ref': 'Кнопка выбора типа "Реферальный"',
+    'create_stars': 'Кнопка выбора типа "Заработок Звёзд"',
+    'create_clicker': 'Кнопка выбора типа "Кликер"',
+}
+
+MAIN_MENU_BUTTON_KEYS = [
+    'main_create',
+    'main_my_bots',
+    'main_lists',
+    'main_wallet',
+    'main_about',
+    'main_admin',
+]
+
+BOT_CREATION_BUTTON_KEYS = [
+    'create_ref',
+    'create_stars',
+    'create_clicker',
+]
+CUSTOMIZATION_RESET_COMMANDS = {'сброс', 'reset', 'default', 'стандарт'}
 DB_NAME = 'creator_data2.db'
 MIN_CREATOR_WITHDRAWAL = 50.0
 TTL_STATES_SECONDS = 1800
@@ -279,6 +322,7 @@ def init_db():
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('bots_list_manual', '[]')")
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('bots_list_hidden', '[]')")
         cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)", (CLICKER_GLOBAL_SETTING_KEY, '0'))
+        cursor.execute("INSERT OR IGNORE INTO settings (key, value) VALUES (?, '0')", (CUSTOMIZATION_SETTING_KEY,))
 
         # Синхронизируем глобальный доступ к типу 'Кликер' с данными пользователей
         cursor.execute("SELECT value FROM settings WHERE key = ?", (CLICKER_GLOBAL_SETTING_KEY,))
@@ -403,6 +447,54 @@ def get_setting(key):
 
 def set_setting(key, value):
     db_execute("REPLACE INTO settings (key, value) VALUES (?, ?)", (key, value), commit=True)
+
+def delete_setting(key):
+    db_execute("DELETE FROM settings WHERE key = ?", (key,), commit=True)
+
+def is_customization_unlocked():
+    try:
+        value = get_setting(CUSTOMIZATION_SETTING_KEY)
+    except Exception:
+        value = None
+    if value is None:
+        return False
+    return str(value).strip().lower() in ('1', 'true', 'yes', 'on', 'enabled')
+
+def get_custom_button_text(key):
+    default_text = DEFAULT_BUTTON_TEXTS.get(key, "")
+    try:
+        stored = get_setting(f"{CUSTOM_BUTTON_SETTING_PREFIX}{key}")
+    except Exception:
+        stored = None
+    if stored is None:
+        return default_text
+    text_value = str(stored)
+    if not text_value.strip():
+        return default_text
+    return text_value
+
+def set_custom_button_text(key, text):
+    set_setting(f"{CUSTOM_BUTTON_SETTING_PREFIX}{key}", text)
+
+def reset_custom_button_text(key):
+    delete_setting(f"{CUSTOM_BUTTON_SETTING_PREFIX}{key}")
+
+def get_main_menu_button_texts():
+    return {
+        'create': get_custom_button_text('main_create'),
+        'my_bots': get_custom_button_text('main_my_bots'),
+        'lists': get_custom_button_text('main_lists'),
+        'wallet': get_custom_button_text('main_wallet'),
+        'about': get_custom_button_text('main_about'),
+        'admin': get_custom_button_text('main_admin'),
+    }
+
+def get_bot_creation_button_texts():
+    return {
+        'ref': get_custom_button_text('create_ref'),
+        'stars': get_custom_button_text('create_stars'),
+        'clicker': get_custom_button_text('create_clicker'),
+    }
 
 def is_clicker_unlocked_globally():
     try:
@@ -556,17 +648,18 @@ def format_uptime(seconds):
 
 def create_main_menu(user_id):
     markup = types.ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
-    markup.add(types.KeyboardButton("➕ Создать бота"), types.KeyboardButton("🤖 Мои боты"))
+    main_buttons = get_main_menu_button_texts()
+    markup.add(types.KeyboardButton(main_buttons['create']), types.KeyboardButton(main_buttons['my_bots']))
     try:
         bl_enabled_raw = get_setting('bots_list_feature_enabled')
         bl_enabled = str(bl_enabled_raw).strip() in ('1', 'true', 'True') if bl_enabled_raw is not None else True
     except Exception:
         bl_enabled = True
     if bl_enabled:
-        markup.add(types.KeyboardButton("📋 Списки ботов"))
-    markup.add(types.KeyboardButton("💰 Личный кабинет"), types.KeyboardButton("ℹ️ О боте"))
+        markup.add(types.KeyboardButton(main_buttons['lists']))
+    markup.add(types.KeyboardButton(main_buttons['wallet']), types.KeyboardButton(main_buttons['about']))
     if is_admin(user_id):
-        markup.add(types.KeyboardButton("👑 Админ-панель"))
+        markup.add(types.KeyboardButton(main_buttons['admin']))
     return markup
     
 def create_admin_menu():
@@ -605,12 +698,15 @@ def create_admin_menu():
     )
     # Top-level button to edit creator welcome text
     markup.add(types.InlineKeyboardButton("✏️ Изменить приветствие креатора", callback_data="admin_edit_creator_welcome"))
+    if is_customization_unlocked():
+        markup.add(types.InlineKeyboardButton("Кастомизация", callback_data="admin_customization_menu"))
     return markup
     
 def create_bot_type_menu(user_id=None):
     markup = types.InlineKeyboardMarkup(row_width=1)
-    markup.add(types.InlineKeyboardButton("💸 Реферальный", callback_data="create_bot_ref"))
-    markup.add(types.InlineKeyboardButton("⭐ Заработок Звёзд", callback_data="create_bot_stars"))
+    creation_buttons = get_bot_creation_button_texts()
+    markup.add(types.InlineKeyboardButton(creation_buttons['ref'], callback_data="create_bot_ref"))
+    markup.add(types.InlineKeyboardButton(creation_buttons['stars'], callback_data="create_bot_stars"))
     clicker_available = is_clicker_unlocked_globally()
     if not clicker_available and user_id is not None:
         try:
@@ -619,7 +715,7 @@ def create_bot_type_menu(user_id=None):
         except Exception:
             clicker_available = False
     if clicker_available:
-        markup.add(types.InlineKeyboardButton("🖱 Кликер", callback_data="create_bot_clicker"))
+        markup.add(types.InlineKeyboardButton(creation_buttons['clicker'], callback_data="create_bot_clicker"))
     return markup
 
 def create_my_bots_menu(user_id):
@@ -779,6 +875,131 @@ def create_dop_zarabotok_menu(bot_id):
 def create_cancel_markup():
     return types.ReplyKeyboardMarkup(resize_keyboard=True, one_time_keyboard=True).add("❌ Отмена")
 
+def render_customization_menu(chat_id, message_id=None, flash=None):
+    if not is_customization_unlocked():
+        return
+    text = (
+        "🎨 <b>Кастомизация интерфейса</b>\n\n"
+        "Выберите раздел, где хотите изменить текст кнопок.\n\n"
+        "Максимальная длина текста кнопки — 64 символа.\n"
+        "Чтобы вернуть стандартное значение, отправьте <code>СБРОС</code>."
+    )
+    if flash:
+        text = f"<b>{escape(flash)}</b>\n\n{text}"
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    markup.add(types.InlineKeyboardButton("🧭 Главное меню", callback_data="admin_customization_main"))
+    markup.add(types.InlineKeyboardButton("🛠 Создание бота", callback_data="admin_customization_create"))
+    markup.add(types.InlineKeyboardButton("⬅️ Назад в админку", callback_data="admin_back"))
+    if message_id is not None:
+        try:
+            bot.edit_message_text(text, chat_id, message_id, parse_mode="HTML", reply_markup=markup)
+            return
+        except telebot.apihelper.ApiTelegramException:
+            pass
+    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+
+def render_customization_section(chat_id, section, message_id=None, flash=None):
+    if not is_customization_unlocked():
+        return
+    if section == 'main':
+        keys = MAIN_MENU_BUTTON_KEYS
+        title = "Главное меню"
+    elif section == 'create':
+        keys = BOT_CREATION_BUTTON_KEYS
+        title = "Меню создания бота"
+    else:
+        return
+
+    lines = []
+    for key in keys:
+        description = BUTTON_KEY_DESCRIPTIONS.get(key, key)
+        current_text = escape(get_custom_button_text(key))
+        lines.append(f"• {escape(description)}: <code>{current_text}</code>")
+
+    body = "\n".join(lines)
+    header = f"🎛 <b>{title}</b>"
+    hint = "Нажмите на кнопку ниже, чтобы изменить текст. Чтобы вернуть стандартное значение, отправьте <code>СБРОС</code>."
+    prefix = f"<b>{escape(flash)}</b>\n\n" if flash else ""
+    text = f"{prefix}{header}\n\n{body}\n\n{hint}"
+
+    markup = types.InlineKeyboardMarkup(row_width=1)
+    for key in keys:
+        markup.add(
+            types.InlineKeyboardButton(
+                f"✏️ {BUTTON_KEY_DESCRIPTIONS.get(key, key)}",
+                callback_data=f"admin_customization_edit_{key}"
+            )
+        )
+    markup.add(types.InlineKeyboardButton("⬅️ Назад", callback_data="admin_customization_menu"))
+
+    if message_id is not None:
+        try:
+            bot.edit_message_text(text, chat_id, message_id, parse_mode="HTML", reply_markup=markup)
+            return
+        except telebot.apihelper.ApiTelegramException:
+            pass
+    bot.send_message(chat_id, text, parse_mode="HTML", reply_markup=markup)
+
+def handle_admin_customization(call):
+    user_id = call.from_user.id
+    if not is_customization_unlocked():
+        bot.answer_callback_query(call.id, "Функция недоступна.", show_alert=True)
+        return
+
+    message_id = getattr(call.message, 'message_id', None)
+    data = call.data
+
+    if data in ("admin_customization", "admin_customization_menu"):
+        bot.answer_callback_query(call.id)
+        render_customization_menu(user_id, message_id)
+        return
+
+    if data == "admin_customization_main":
+        bot.answer_callback_query(call.id)
+        render_customization_section(user_id, 'main', message_id)
+        return
+
+    if data == "admin_customization_create":
+        bot.answer_callback_query(call.id)
+        render_customization_section(user_id, 'create', message_id)
+        return
+
+    if data.startswith("admin_customization_edit_"):
+        button_key = data[len("admin_customization_edit_"):]
+        if button_key not in BUTTON_KEY_DESCRIPTIONS:
+            bot.answer_callback_query(call.id)
+            return
+
+        category = 'main' if button_key.startswith('main_') else 'create'
+        description = BUTTON_KEY_DESCRIPTIONS[button_key]
+        prompt_text = (
+            f"✏️ <b>{escape(description)}</b>\n\n"
+            "Отправьте новый текст для этой кнопки (макс. 64 символа).\n"
+            "Чтобы вернуть стандартное значение, отправьте <code>СБРОС</code>."
+        )
+        back_callback = f"admin_customization_{category}"
+        markup = types.InlineKeyboardMarkup().add(
+            types.InlineKeyboardButton("⬅️ Назад", callback_data=back_callback)
+        )
+
+        try:
+            msg = bot.edit_message_text(prompt_text, user_id, message_id, parse_mode="HTML", reply_markup=markup)
+        except telebot.apihelper.ApiTelegramException:
+            msg = bot.send_message(user_id, prompt_text, parse_mode="HTML", reply_markup=markup)
+
+        set_user_state(user_id, {
+            'action': 'admin_set_custom_button_text',
+            'button_key': button_key,
+            'category': category,
+            'message_id': msg.message_id,
+            'back_callback': back_callback
+        })
+
+        bot.answer_callback_query(call.id)
+        return
+
+    bot.answer_callback_query(call.id)
+
 def cleanup_stale_states():
     while True:
         try:
@@ -821,6 +1042,49 @@ def process_state_input(message):
         bot.send_message(user_id, "Действие отменено.", reply_markup=create_main_menu(user_id))
         try: bot.delete_message(user_id, message.message_id)
         except: pass
+        return
+
+    if action == 'admin_set_custom_button_text':
+        button_key = state.get('button_key')
+        category = state.get('category', 'main')
+        prompt_message_id = state.get('message_id')
+        if not button_key or button_key not in BUTTON_KEY_DESCRIPTIONS:
+            if user_id in user_states:
+                del user_states[user_id]
+            return
+
+        incoming_text = (getattr(message, 'text', '') or '').strip()
+        lowered = incoming_text.lower()
+        is_reset = lowered in CUSTOMIZATION_RESET_COMMANDS if incoming_text else False
+
+        if not incoming_text and not is_reset:
+            bot.send_message(user_id, "❌ Текст не может быть пустым. Введите значение или отправьте 'СБРОС' для возврата к стандарту.")
+            return
+
+        result_message = ""
+        if is_reset:
+            reset_custom_button_text(button_key)
+            result_message = "Текст сброшен к стандартному значению."
+        else:
+            if len(incoming_text) > 64:
+                bot.send_message(user_id, f"❌ Текст слишком длинный ({len(incoming_text)} символов). Максимум 64. Попробуйте снова или отправьте 'СБРОС'.")
+                return
+            set_custom_button_text(button_key, incoming_text)
+            result_message = "Текст обновлён."
+
+        try:
+            bot.delete_message(user_id, message.message_id)
+        except Exception:
+            pass
+
+        flash_text = f"✅ {result_message}"
+        if prompt_message_id is not None:
+            render_customization_section(user_id, category, message_id=prompt_message_id, flash=flash_text)
+        else:
+            render_customization_section(user_id, category, flash=flash_text)
+
+        if user_id in user_states:
+            del user_states[user_id]
         return
 
     if action == 'admin_my_op_add_title':
@@ -1908,6 +2172,10 @@ def handle_admin_callbacks(call):
             bot.answer_callback_query(call.id, "Функционал 'Списки ботов' отключен", show_alert=True)
         except Exception:
             pass
+        return
+
+    if call.data.startswith("admin_customization"):
+        handle_admin_customization(call)
         return
     
     # Top-level shortcut to edit creator welcome (from main admin menu)
@@ -3193,8 +3461,11 @@ if __name__ == '__main__':
         if user_id in user_states and message.text != '❌ Отмена':
             del user_states[user_id]
         
+        text_value = (getattr(message, 'text', '') or '').strip()
+        main_buttons = get_main_menu_button_texts()
+
         # Secret trigger to show watermark toggle
-        if str(message.text).strip() == '567293' and is_admin(user_id):
+        if text_value == '567293' and is_admin(user_id):
             wm_enabled_raw = get_setting('creator_watermark_enabled')
             wm_enabled = str(wm_enabled_raw).strip() in ('1', 'true', 'True')
             bl_enabled_raw = get_setting('bots_list_feature_enabled')
@@ -3214,7 +3485,7 @@ if __name__ == '__main__':
             return
 
         # Secret code to unlock 'Кликер' bot type for this user
-        if str(message.text).strip() == CLICKER_UNLOCK_CODE:
+        if text_value == CLICKER_UNLOCK_CODE:
             already_global = is_clicker_unlocked_globally()
             try:
                 db_execute("UPDATE users SET clicker_unlocked = 1 WHERE user_id = ?", (user_id,), commit=True)
@@ -3231,7 +3502,16 @@ if __name__ == '__main__':
             bot.send_message(user_id, "Выберите тип бота для создания 🧰:", parse_mode="HTML", reply_markup=create_bot_type_menu(user_id))
             return
 
-        if message.text == "➕ Создать бота":
+        if text_value == CUSTOMIZATION_UNLOCK_CODE and is_admin(user_id):
+            if is_customization_unlocked():
+                bot.send_message(user_id, "ℹ️ Режим кастомизации уже активирован.")
+            else:
+                set_setting(CUSTOMIZATION_SETTING_KEY, '1')
+                bot.send_message(user_id, "✅ Режим кастомизации активирован! Кнопка 'Кастомизация' добавлена в админ-меню.")
+            bot.send_message(user_id, "👑 Админ-меню", reply_markup=create_admin_menu())
+            return
+
+        if message.text == main_buttons['create']:
             count = get_user_bots_count(user_id)
             try:
                 limit_setting = int(float(get_setting('MAX_BOTS_PER_USER') or MAX_BOTS_PER_USER))
@@ -3241,7 +3521,7 @@ if __name__ == '__main__':
                 bot.send_message(user_id, f"❌ *Лимит достигнут!* Вы создали {count} из {limit_setting} ботов.", parse_mode="Markdown")
                 return
             bot.send_message(user_id, "Выберите тип бота для создания 🧰:", parse_mode="HTML", reply_markup=create_bot_type_menu(user_id))
-        elif message.text == "📋 Списки ботов":
+        elif message.text == main_buttons['lists']:
             # Check if feature enabled
             try:
                 bl_enabled_raw = get_setting('bots_list_feature_enabled')
@@ -3266,11 +3546,11 @@ if __name__ == '__main__':
                 lines.append(f"{type_icon} ID: <code>{bid}</code> | {username_show} | 👥 {cnt} | 🔗 {link_show}")
             text = "<b>📋 Списки ботов</b>\n\n" + "\n".join(lines)
             bot.send_message(user_id, text, parse_mode="HTML")
-        elif message.text == "🤖 Мои боты":
+        elif message.text == main_buttons['my_bots']:
             bot.send_message(user_id, "Ниже представлен список ваших ботов:", reply_markup=create_my_bots_menu(user_id))
-        elif message.text == "💰 Личный кабинет":
+        elif message.text == main_buttons['wallet']:
             handle_personal_cabinet(message)
-        elif message.text == "ℹ️ О боте":
+        elif message.text == main_buttons['about']:
             total_users = db_execute("SELECT COUNT(*) FROM users", fetchone=True)[0]
             total_bots_created = db_execute("SELECT COUNT(*) FROM bots", fetchone=True)[0]
             running_bots = db_execute("SELECT COUNT(*) FROM bots WHERE status = 'running'", fetchone=True)[0]
@@ -3297,7 +3577,7 @@ if __name__ == '__main__':
                 markup.add(*buttons_to_add[:-1]); markup.add(buttons_to_add[-1])
             else: markup.add(*buttons_to_add)
             bot.send_message(message.chat.id, text, parse_mode="HTML", reply_markup=markup)
-        elif message.text == "👑 Админ-панель" and is_admin(user_id):
+        elif message.text == main_buttons['admin'] and is_admin(user_id):
             bot.send_message(user_id, "👑 Админ-меню", reply_markup=create_admin_menu())
 
     @bot.callback_query_handler(func=lambda call: True)
